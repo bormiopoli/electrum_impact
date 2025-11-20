@@ -24,7 +24,7 @@
 # SOFTWARE.
 
 # Note: The deserialization code originally comes from ABE.
-
+import logging
 import struct
 import io
 import base64

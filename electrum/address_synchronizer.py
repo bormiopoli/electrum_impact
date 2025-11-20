@@ -439,13 +439,51 @@ class AddressSynchronizer(Logger, EventListener):
         return children
 
     @with_lock
-    def receive_tx_callback(self, tx: Transaction, *, tx_height: Optional[int] = None) -> None:
+    def receive_tx_callback(
+        self,
+        tx: Transaction,
+        *,
+        tx_height: Optional[int] = None
+    ) -> None:
+        """
+        Called when a new transaction is received from the network.
+        Updates wallet history and impact tracking.
+        """
         txid = tx.txid()
         assert txid is not None
+
+        # preserve original behavior
         if tx_height is not None:
-            # note: tx_height is only set by the unit tests: to inject a tx into the history
+            # note: tx_height is only set by unit tests: to inject a tx into the history
             self.add_unverified_or_unconfirmed_tx(txid, tx_height)
+
         self.add_transaction(tx, allow_unrelated=True)
+
+        # --- custom impact tracking ---
+        try:
+            amount = sum(o.value for o in tx.outputs()) if hasattr(tx, "outputs") else 0
+        except Exception:
+            amount = 0
+
+        # initialize fields if missing
+        if "impact_cum" not in self.db.data:
+            self.db.data["impact_cum"] = {}
+
+        for item in self.db.data["impact_info"]:
+            impact = item["impact"]
+            for it in impact.items():
+                k, v = it
+                if k in self.db.data["impact_cum"]:
+                    self.db.data["impact_cum"][k] += v * amount
+                else:
+                    self.db.data["impact_cum"][k] = 0
+        self.db.data["impact_last_tx"] = {
+            "txid": txid,
+            "amount": sum(v for v in self.db.data["impact_cum"].values()),
+        }
+
+        # persist changes
+        self.db.write()
 
     @with_lock
     def receive_history_callback(self, addr: str, hist, tx_fees: Dict[str, int]):

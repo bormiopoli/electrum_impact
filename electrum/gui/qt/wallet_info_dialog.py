@@ -107,6 +107,16 @@ class WalletInfoDialog(WindowModalDialog):
                 grid.addWidget(WWLabel(_("Not available for this wallet.")), cur_row, 1)
                 grid.addWidget(HelpButton(_("Lightning is currently restricted to HD wallets with p2wpkh addresses.")), cur_row, 2)
             cur_row += 1
+
+        if "impact_info" in wallet.db.data:
+            cur_row += 1
+            grid.addWidget(WWLabel(_("Impact info") + ':'), cur_row, 0)
+            grid.addWidget(WWLabel(str(wallet.db.data["impact_info"])), cur_row, 1)
+
+        if "impact_cum" in wallet.db.data:
+            cur_row += 1
+            grid.addWidget(WWLabel(_("Impact cumulative") + ':'), cur_row, 0)
+            grid.addWidget(WWLabel(str(wallet.db.data["impact_cum"])), cur_row, 1)
         vbox.addLayout(grid)
 
         labels_clayout = None

@@ -5,6 +5,7 @@ import threading
 
 from typing import TYPE_CHECKING, Optional, List, Tuple
 
+import requests
 from PyQt6.QtCore import Qt, QTimer, QRect, pyqtSignal
 from PyQt6.QtGui import QPen, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget,
@@ -22,7 +23,7 @@ from electrum.wallet import wallet_types
 from .wizard import QEAbstractWizard, WizardComponent
 from electrum.logging import get_logger, Logger
 from electrum import WalletStorage, mnemonic, keystore
-from electrum.wallet_db import WalletDB
+from electrum.wallet_db import WalletDB, WalletDBUpgrader
 from electrum.wizard import NewWalletWizard, KeystoreWizard, WizardViewState
 
 from electrum.gui.qt.bip39_recovery_dialog import Bip39RecoveryDialog
@@ -31,6 +32,7 @@ from electrum.gui.qt.seed_dialog import SeedWidget, MSG_PASSPHRASE_WARN_ISSUE456
 from electrum.gui.qt.util import (PasswordLineEdit, char_width_in_lineedit, WWLabel, InfoButton, font_height,
                                   ChoiceWidget, MessageBoxMixin, icon_path, IconLabel, read_QIcon)
 from electrum.gui.qt.plugins_dialog import PluginsDialog
+from electrum.gui.qt.productdialog import ProductDialog
 
 if TYPE_CHECKING:
     from electrum.simple_config import SimpleConfig
@@ -93,6 +95,7 @@ class QENewWalletWizard(NewWalletWizard, QEAbstractWizard, MessageBoxMixin):
         self.window_title = _('Create/Restore wallet')
 
         self._path = path
+        self._impact = []
         self._password = None
 
         # attach gui classes to views
@@ -100,6 +103,7 @@ class QENewWalletWizard(NewWalletWizard, QEAbstractWizard, MessageBoxMixin):
             'wallet_name': {'gui': WCWalletName},
             'hw_unlock': {'gui': WCChooseHWDevice},
             'wallet_type': {'gui': WCWalletType},
+            'impact': {'gui': WCImpactType},
             'keystore_type': {'gui': WCKeystoreType},
             'create_seed': {'gui': WCCreateSeed},
             'create_ext': {'gui': WCEnterExt},
@@ -128,9 +132,23 @@ class QENewWalletWizard(NewWalletWizard, QEAbstractWizard, MessageBoxMixin):
                 'next': lambda d: 'hw_unlock' if d['wallet_needs_hw_unlock'] else 'wallet_type',
                 'last': lambda d: d['wallet_exists'] and not d['wallet_needs_hw_unlock']
             },
+            'keystore_type': {
+                'next': lambda d: 'impact'  # <-- send flow to your step
+            },
+            'impact': {
+                'next': lambda d: 'create_seed' if d['keystore_type'] == 'createseed' else 'have_seed'
+            }
         })
 
         run_hook('init_wallet_wizard', self)
+
+    @property
+    def impact(self):
+        return self._impact
+
+    @impact.setter
+    def impact(self, _impact):
+        self._impact = _impact
 
     @property
     def path(self):
@@ -145,16 +163,25 @@ class QENewWalletWizard(NewWalletWizard, QEAbstractWizard, MessageBoxMixin):
         return False
 
     def create_storage(self, single_password: str = None):
+        import json
         self._logger.info('Creating wallet from wizard data')
         data = self.get_wizard_data()
-
         path = os.path.join(os.path.dirname(self._daemon.config.get_wallet_path()), data['wallet_name'])
 
         super().create_storage(path, data)
 
+        storage = WalletStorage(path)
+        db = WalletDB(storage.read(), upgrade=True)
+        db.put_info("impact_info", data.get("impact_info", []))
+        if getattr(db, 'data', None) is not None:
+            if 'impact_cum' not in db.data:
+                db.data['impact_cum'] = {}
+        storage.write(db.dump())
+
         # minimally populate self after create
         self._password = data['password']
         self.path = path
+        self.impact = data["impact_info"]
 
     def run_split(self, wallet_path, split_data) -> None:
         msg = _(
@@ -1483,3 +1510,32 @@ class WCHWUninitialized(WalletWizardComponent):
 
     def apply(self):
         pass
+
+
+class WCImpactType(WalletWizardComponent):
+    def __init__(self, parent, wizard):
+        super().__init__(parent, wizard, title=_('Impact'))
+        self._valid = True
+
+        # embed ProductDialog directly
+        countries = requests.get("http://192.168.1.123:3000/countries").json()
+        sectors = requests.get("http://192.168.1.123:3000/sectors").json()
+
+        self.product_dialog = ProductDialog(countries, sectors, self)
+        self.layout = QVBoxLayout(self)
+        self.layout.addWidget(self.product_dialog)
+
+    def apply(self):
+        selection = self.product_dialog.get_selection()
+        for product_dict in selection:
+            if product_dict["amount"] != 0:
+                impact = requests.get(
+                    f"http://192.168.1.123:3000/engine/compute_impacts?product=('{product_dict['country']}', '{product_dict['product']}')"
+                )
+                impacts_dict = impact.json()
+                impacts_dict = {k: v * product_dict["amount"] for k, v in impacts_dict.items()}
+                product_dict["impact"] = impacts_dict
+
+        self.wizard_data['impact_info'] = selection
+
+

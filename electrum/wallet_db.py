@@ -1314,6 +1314,20 @@ class WalletDB(JsonDB):
         # load plugins that are conditional on wallet type
         self.load_plugins()
 
+        # ensure impact_info exists in new wallets
+        if "impact_info" not in self.data:
+            self.data["impact_info"] = []
+
+    @locked
+    def get_impact_info(self):
+        """Return the impact_info list/dict stored in the wallet file."""
+        return self.data.get("impact_info", [])
+
+    @modifier
+    def put_info(self, impact_info, value):
+        """Persist impact_info into the wallet file (must be JSON-serializable)."""
+        self.data[impact_info] = value
+
     @locked
     def get_seed_version(self):
         return self.get('seed_version')
